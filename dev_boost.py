@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-EU4 1444 明开局省份基础发展度提升脚本（支持只输出到 mod）
+EU4 省份基础发展度调节脚本（支持只输出到 mod）
 
 功能：
   - 扫描源目录 history/provinces
-  - 只选 1444.11.11 时 owner = MNG 的省份
+  - 按 1444.11.11 时的 owner 筛选省份
   - 只改顶层 base_tax / base_production / base_manpower
   - 输出模式：
       list    : 只列出候选省份，不写文件
       inplace : 直接改源目录里的省份文件
       mod     : 只把要改的省份文件复制/写入 mod 目录，其余省份不复制
   - 支持白名单/黑名单/文件清单
+  - 支持多个 owner tag（逗号分隔）
 """
 
 import argparse
@@ -51,7 +52,7 @@ class DevTriple(NamedTuple):
 def to_int(v: object, default: int = 0) -> int:
     try:
         return int(str(v).strip())
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return default
 
 
@@ -112,7 +113,7 @@ def parse_history_file(path: Path) -> tuple[KVMap, DatedBlocks]:
 
 
 def get_owner_at(top: KVMap, dated: DatedBlocks, start: DateKey) -> str | None:
-    """返回开局日期时的 owner。"""
+    """返回指定日期时的 owner。"""
     owner_val = top.get("owner")
     owner: str | None = owner_val if isinstance(owner_val, str) else None
 
@@ -205,7 +206,7 @@ def rewrite_dev_text(text: str, tax: int, prod: int, man: int) -> str:
 
 
 def load_id_list(text: str) -> set[int]:
-    """从字符串里提取所有省份 ID，支持逗号、空格、换行分隔。"""
+    """从字符串里提取所有数字 ID，支持逗号、空格、换行分隔。"""
     ids: set[int] = set()
     for tok in re.split(r"[\s,;]+", text.strip()):
         if not tok:
@@ -215,8 +216,20 @@ def load_id_list(text: str) -> set[int]:
     return ids
 
 
+def load_tag_list(text: str) -> set[str]:
+    """从字符串里提取所有 tag，支持逗号、空格、换行分隔，统一大写。"""
+    tags: set[str] = set()
+    for tok in re.split(r"[\s,;]+", text.strip()):
+        if not tok:
+            continue
+        tags.add(tok.upper())
+    return tags
+
+
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="提升 EU4 1444 明开局省份基础发展度")
+    ap = argparse.ArgumentParser(
+        description="按开局 owner 调节 EU4 省份基础发展度"
+    )
     ap.add_argument(
         "--source-root",
         required=True,
@@ -246,12 +259,16 @@ def parse_args() -> argparse.Namespace:
         help="output-mode=mod 时，如果 mod 里已有同名文件是否覆盖。默认不覆盖",
     )
 
-    ap.add_argument("--owner", default="MNG", help="开局国家 tag，默认 MNG")
+    ap.add_argument(
+        "--owner",
+        default="MNG",
+        help="开局国家 tag，多个用逗号分隔。默认 MNG",
+    )
 
     ap.add_argument(
         "--provinces",
         default=None,
-        help="只改这些省份 ID，逗号/空格分隔。留空=全部明省",
+        help="只改这些省份 ID，逗号/空格分隔。留空=全部匹配 owner 的省份",
     )
     ap.add_argument(
         "--provinces-file",
@@ -300,6 +317,10 @@ def main() -> int:
     if not hist_dir.exists():
         raise SystemExit(f"省份历史目录不存在: {hist_dir}")
 
+    owner_tags = load_tag_list(args.owner)
+    if not owner_tags:
+        raise SystemExit("--owner 至少需要一个 tag。")
+
     # ---------- 1. 读取全部省份 ----------
     all_provs: dict[int, ProvinceInfo] = {}
     for p in sorted(hist_dir.glob("*.txt")):
@@ -334,7 +355,7 @@ def main() -> int:
     # ---------- 3. 筛选目标省份 ----------
     targets: dict[int, ProvinceInfo] = {}
     for pid, info in all_provs.items():
-        if info["owner"] != args.owner:
+        if info["owner"] not in owner_tags:
             continue
         if whitelist is not None and pid not in whitelist:
             continue
@@ -343,7 +364,8 @@ def main() -> int:
         targets[pid] = info
 
     if not targets:
-        raise SystemExit("没有匹配到任何省份。")
+        tags_str = ",".join(sorted(owner_tags))
+        raise SystemExit(f"没有匹配到任何省份（owner 在 {tags_str} 中）。")
 
     # ---------- 4. 计算新发展度 ----------
     orig_total = sum(i["tax"] + i["prod"] + i["man"] for i in targets.values())
@@ -378,8 +400,10 @@ def main() -> int:
     actual_total = sum(sum(v) for v in plan.values())
 
     # ---------- 5. 执行 ----------
+    tags_str = ",".join(sorted(owner_tags))
     print(
-        f"模式={args.output_mode}，匹配省份数={len(targets)}，"
+        f"模式={args.output_mode}，owner={tags_str}，"
+        f"匹配省份数={len(targets)}，"
         f"原始总dev={orig_total}，目标总dev={final_total}，实际总dev={actual_total}"
     )
 
@@ -388,7 +412,7 @@ def main() -> int:
             info = targets[pid]
             t, p, m = plan[pid]
             print(
-                f"{pid:4d} {info['path'].name}: "
+                f"{pid:4d} [{info['owner']}] {info['path'].name}: "
                 f"{info['tax']}/{info['prod']}/{info['man']} -> {t}/{p}/{m}"
             )
         print("list 模式：未写入文件。")
@@ -400,7 +424,7 @@ def main() -> int:
             raise SystemExit("output-mode=mod 需要同时指定 --mod-root")
         mod_hist = Path(args.mod_root) / args.history
         if not args.dry_run:
-            mod_hist.mkdir(parents=True, exist_ok=True)  # pyright: ignore[reportOptionalMemberAccess]
+            mod_hist.mkdir(parents=True, exist_ok=True) # pyright: ignore[reportOptionalMemberAccess]
 
     for pid in sorted(targets):
         info = targets[pid]
