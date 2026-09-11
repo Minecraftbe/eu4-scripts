@@ -226,81 +226,108 @@ def load_tag_list(text: str) -> set[str]:
     return tags
 
 
+# ---------- 默认值常量 ----------
+DEFAULT_HISTORY = "history/provinces"
+DEFAULT_OUTPUT_MODE = "list"
+DEFAULT_OWNER = "MNG"
+DEFAULT_FACTOR = 2.5
+
+
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="按开局 owner 调节 EU4 省份基础发展度")
+    ap = argparse.ArgumentParser(
+        description="按开局 owner 调节 EU4 省份基础发展度",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例：\n"
+            "  # 只列清单，不写文件（默认模式）\n"
+            "  %(prog)s --source-root /path/to/eu4\n\n"
+            "  # 只改明，目标总 dev 3200，输出到 mod\n"
+            "  %(prog)s --source-root /path/to/eu4 --owner MNG \\\n"
+            "      --target-dev 3200 --output-mode mod --mod-root /path/to/mod\n\n"
+            "  # 只改明，按 2.0 倍\n"
+            "  %(prog)s --source-root /path/to/eu4 --owner MNG --factor 2.0\n"
+        ),
+    )
+
     ap.add_argument(
         "--source-root",
         required=True,
-        help="源目录（原版或 mod）根目录",
+        help="【必填】源目录（原版或 mod）根目录",
     )
     ap.add_argument(
         "--history",
-        default="history/provinces",
-        help="省份历史目录，相对 source-root",
+        default=DEFAULT_HISTORY,
+        help=f"省份历史目录，相对 source-root（默认：{DEFAULT_HISTORY}）",
     )
 
     ap.add_argument(
         "--output-mode",
         choices=["list", "inplace", "mod"],
-        default="list",
-        help="list=只列清单；inplace=直接改源目录；mod=只输出到 mod 目录",
+        default=DEFAULT_OUTPUT_MODE,
+        help=(
+            "输出模式："
+            "list=只列清单；"
+            "inplace=直接改源目录；"
+            "mod=只输出到 mod 目录"
+            f"（默认：{DEFAULT_OUTPUT_MODE}）"
+        ),
     )
 
     ap.add_argument(
         "--mod-root",
         default=None,
-        help="output-mode=mod 时的 mod 根目录",
+        help="output-mode=mod 时的 mod 根目录（必填当 output-mode=mod；默认：无）",
     )
     ap.add_argument(
         "--overwrite-mod",
         action="store_true",
-        help="output-mode=mod 时，如果 mod 里已有同名文件是否覆盖。默认不覆盖",
+        help="output-mode=mod 时，若 mod 里已有同名文件是否覆盖（默认：不覆盖）",
     )
 
     ap.add_argument(
         "--owner",
-        default="MNG",
-        help="开局国家 tag，多个用逗号分隔。默认 MNG",
+        default=DEFAULT_OWNER,
+        help=(f"开局国家 tag，多个用逗号分隔，例如 MNG,QNG（默认：{DEFAULT_OWNER}）"),
     )
 
     ap.add_argument(
         "--provinces",
         default=None,
-        help="只改这些省份 ID，逗号/空格分隔。留空=全部匹配 owner 的省份",
+        help="只改这些省份 ID，逗号/空格分隔；留空=全部匹配 owner 的省份（默认：无）",
     )
     ap.add_argument(
         "--provinces-file",
         default=None,
-        help="从文本文件读取省份 ID 白名单，每行可有多个 ID",
+        help="从文本文件读取省份 ID 白名单，每行可有多个 ID（默认：无）",
     )
     ap.add_argument(
         "--exclude",
         default=None,
-        help="排除这些省份 ID，逗号/空格分隔",
+        help="排除这些省份 ID，逗号/空格分隔（默认：无）",
     )
 
     ap.add_argument(
         "--target-dev",
         type=int,
         default=None,
-        help="目标总发展度。不填则使用 factor 乘以原始总发展度",
+        help=("目标总发展度；不填则使用 --factor 乘以原始总发展度（默认：无）"),
     )
     ap.add_argument(
         "--factor",
         type=float,
-        default=2.5,
-        help="无 target-dev 时的总发展度乘数，默认 2.5",
+        default=DEFAULT_FACTOR,
+        help=(f"无 --target-dev 时的总发展度乘数（默认：{DEFAULT_FACTOR}）"),
     )
 
     ap.add_argument(
         "--backup",
         action="store_true",
-        help="output-mode=inplace 时，写入前生成 .bak 备份",
+        help="output-mode=inplace 时，写入前生成 .bak 备份（默认：不备份）",
     )
     ap.add_argument(
         "--dry-run",
         action="store_true",
-        help="不写文件，只显示将要做什么",
+        help="不写文件，只显示将要做什么（默认：否）",
     )
 
     return ap.parse_args()
