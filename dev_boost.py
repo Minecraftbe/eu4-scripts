@@ -12,6 +12,7 @@ EU4 省份基础发展度调节脚本（支持只输出到 mod）
       mod     : 只把要改的省份文件复制/写入 mod 目录，其余省份不复制
   - 支持白名单/黑名单/文件清单
   - 支持多个 owner tag（逗号分隔）
+  - dry-run 时打印解析后的绝对路径与关键参数
 """
 
 import argparse
@@ -29,6 +30,12 @@ type DateKey = tuple[int, int, int]
 type KVValue = str | list[str]
 type KVMap = dict[str, KVValue]
 type DatedBlocks = list[tuple[DateKey, KVMap]]
+
+# ---------- 默认值常量 ----------
+DEFAULT_HISTORY = "history/provinces"
+DEFAULT_OUTPUT_MODE = "list"
+DEFAULT_OWNER = "MNG"
+DEFAULT_FACTOR = 2.5
 
 
 class ProvinceInfo(TypedDict):
@@ -226,11 +233,43 @@ def load_tag_list(text: str) -> set[str]:
     return tags
 
 
-# ---------- 默认值常量 ----------
-DEFAULT_HISTORY = "history/provinces"
-DEFAULT_OUTPUT_MODE = "list"
-DEFAULT_OWNER = "MNG"
-DEFAULT_FACTOR = 2.5
+def print_run_config(
+    args: argparse.Namespace,
+    *,
+    source_root: Path,
+    hist_dir: Path,
+    mod_root: Path | None,
+    owner_tags: set[str],
+) -> None:
+    """打印解析后的运行配置（路径均已是绝对路径）。"""
+    print("=== 运行配置 ===")
+    print(f"  source-root    : {source_root}")
+    print(f"  history        : {hist_dir}")
+    print(f"  output-mode    : {args.output_mode}")
+    if args.output_mode == "mod":
+        shown = mod_root if mod_root is not None else "(未指定)"
+        print(f"  mod-root       : {shown}")
+        print(
+            f"  mod history    : "
+            f"{mod_root / args.history if mod_root is not None else '(未指定)'}"
+        )
+        print(f"  overwrite-mod  : {args.overwrite_mod}")
+    print(f"  owner          : {','.join(sorted(owner_tags))}")
+    if args.target_dev is not None:
+        print(f"  target-dev     : {args.target_dev}")
+    else:
+        print(f"  factor         : {args.factor}")
+    if args.provinces:
+        print(f"  provinces      : {args.provinces}")
+    if args.provinces_file:
+        pf = Path(args.provinces_file).expanduser().resolve()
+        print(f"  provinces-file : {pf}")
+    if args.exclude:
+        print(f"  exclude        : {args.exclude}")
+    print(f"  backup         : {args.backup}")
+    print(f"  dry-run        : {args.dry_run}")
+    print("================")
+    print()
 
 
 def parse_args() -> argparse.Namespace:
@@ -244,8 +283,8 @@ def parse_args() -> argparse.Namespace:
             "  # 只改明，目标总 dev 3200，输出到 mod\n"
             "  %(prog)s --source-root /path/to/eu4 --owner MNG \\\n"
             "      --target-dev 3200 --output-mode mod --mod-root /path/to/mod\n\n"
-            "  # 只改明，按 2.0 倍\n"
-            "  %(prog)s --source-root /path/to/eu4 --owner MNG --factor 2.0\n"
+            "  # 改明和清，按 2.0 倍\n"
+            "  %(prog)s --source-root /path/to/eu4 --owner MNG,QNG --factor 2.0\n"
         ),
     )
 
@@ -276,7 +315,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--mod-root",
         default=None,
-        help="output-mode=mod 时的 mod 根目录（必填当 output-mode=mod；默认：无）",
+        help="output-mode=mod 时的 mod 根目录（output-mode=mod 时必填；默认：无）",
     )
     ap.add_argument(
         "--overwrite-mod",
@@ -310,13 +349,13 @@ def parse_args() -> argparse.Namespace:
         "--target-dev",
         type=int,
         default=None,
-        help=("目标总发展度；不填则使用 --factor 乘以原始总发展度（默认：无）"),
+        help="目标总发展度；不填则使用 --factor 乘以原始总发展度（默认：无）",
     )
     ap.add_argument(
         "--factor",
         type=float,
         default=DEFAULT_FACTOR,
-        help=(f"无 --target-dev 时的总发展度乘数（默认：{DEFAULT_FACTOR}）"),
+        help=f"无 --target-dev 时的总发展度乘数（默认：{DEFAULT_FACTOR}）",
     )
 
     ap.add_argument(
@@ -336,8 +375,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    source_root = Path(args.source_root)
-    hist_dir = source_root / args.history
+    source_root = Path(args.source_root).expanduser().resolve()
+    hist_dir = (source_root / args.history).resolve()
 
     if not hist_dir.exists():
         raise SystemExit(f"省份历史目录不存在: {hist_dir}")
@@ -345,6 +384,19 @@ def main() -> int:
     owner_tags = load_tag_list(args.owner)
     if not owner_tags:
         raise SystemExit("--owner 至少需要一个 tag。")
+
+    mod_root_resolved: Path | None = None
+    if args.mod_root:
+        mod_root_resolved = Path(args.mod_root).expanduser().resolve()
+
+    if args.dry_run:
+        print_run_config(
+            args,
+            source_root=source_root,
+            hist_dir=hist_dir,
+            mod_root=mod_root_resolved,
+            owner_tags=owner_tags,
+        )
 
     # ---------- 1. 读取全部省份 ----------
     all_provs: dict[int, ProvinceInfo] = {}
@@ -445,11 +497,16 @@ def main() -> int:
 
     mod_hist: Path | None = None
     if args.output_mode == "mod":
-        if not args.mod_root:
+        if mod_root_resolved is None:
             raise SystemExit("output-mode=mod 需要同时指定 --mod-root")
-        mod_hist = Path(args.mod_root) / args.history
+        if mod_root_resolved == source_root:
+            raise SystemExit(
+                "mod-root 与 source-root 相同，会写入源目录。"
+                "请指定独立的 mod 目录，或改用 --output-mode inplace。"
+            )
+        mod_hist = mod_root_resolved / args.history
         if not args.dry_run:
-            mod_hist.mkdir(parents=True, exist_ok=True)  # pyright: ignore[reportOptionalMemberAccess]
+            mod_hist.mkdir(parents=True, exist_ok=True)
 
     for pid in sorted(targets):
         info = targets[pid]
