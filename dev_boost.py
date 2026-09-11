@@ -4,7 +4,7 @@ EU4 省份基础发展度调节脚本（支持只输出到 mod）
 
 功能：
   - 扫描源目录 history/provinces
-  - 按 1444.11.11 时的 owner 筛选省份
+  - 读取每个省份文件顶层的 owner（即 1444 开局 owner）
   - 只改顶层 base_tax / base_production / base_manpower
   - 输出模式：
       list    : 只列出候选省份，不写文件
@@ -21,15 +21,11 @@ import shutil
 from pathlib import Path
 from typing import NamedTuple, TypedDict
 
-START_DATE: tuple[int, int, int] = (1444, 11, 11)
-
 DATE_RE = re.compile(r"^(\d{1,4})\.(\d{1,2})\.(\d{1,2})\s*=\s*\{")
 KV_INNER_RE = re.compile(r'([A-Za-z0-9_]+)\s*=\s*("[^"]*"|\S+)')
 
-type DateKey = tuple[int, int, int]
 type KVValue = str | list[str]
 type KVMap = dict[str, KVValue]
-type DatedBlocks = list[tuple[DateKey, KVMap]]
 
 # ---------- 默认值常量 ----------
 DEFAULT_HISTORY = "history/provinces"
@@ -75,63 +71,20 @@ def parse_kv_inner(text: str, target: KVMap) -> None:
             target[key] = val
 
 
-def parse_history_file(path: Path) -> tuple[KVMap, DatedBlocks]:
-    """解析 EU4 省份历史文件，兼容单行/多行日期块。"""
+def parse_top_level(path: Path) -> KVMap:
+    """只解析第一个日期块之前的顶层键值。"""
     text = path.read_text(encoding="utf-8-sig", errors="ignore")
     top: KVMap = {}
-    dated: DatedBlocks = []
-    current_block: KVMap | None = None
 
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].rstrip()
         if not line.strip():
             continue
-
-        if current_block is None:
-            m = DATE_RE.match(line.strip())
-            if m:
-                cur_date: DateKey = (
-                    int(m.group(1)),
-                    int(m.group(2)),
-                    int(m.group(3)),
-                )
-                current_block = {}
-                dated.append((cur_date, current_block))
-                rest = line[m.end() :].strip()
-                if "}" in rest:
-                    inner = rest.split("}", 1)[0]
-                    parse_kv_inner(inner, current_block)
-                    current_block = None
-                else:
-                    parse_kv_inner(rest, current_block)
-                continue
-
-            parse_kv_inner(line, top)
-
-        else:
-            if "}" in line:
-                before = line.split("}", 1)[0]
-                parse_kv_inner(before, current_block)
-                current_block = None
-            else:
-                parse_kv_inner(line, current_block)
-
-    return top, dated
-
-
-def get_owner_at(top: KVMap, dated: DatedBlocks, start: DateKey) -> str | None:
-    """返回指定日期时的 owner。"""
-    owner_val = top.get("owner")
-    owner: str | None = owner_val if isinstance(owner_val, str) else None
-
-    for d, block in sorted(dated, key=lambda x: x[0]):
-        if d <= start:
-            ov = block.get("owner")
-            if isinstance(ov, str):
-                owner = ov
-        else:
+        if DATE_RE.match(line.strip()):
             break
-    return owner
+        parse_kv_inner(line, top)
+
+    return top
 
 
 def distribute(new_total: int, tax: int, prod: int, man: int) -> DevTriple:
@@ -283,8 +236,8 @@ def parse_args() -> argparse.Namespace:
             "  # 只改明，目标总 dev 3200，输出到 mod\n"
             "  %(prog)s --source-root /path/to/eu4 --owner MNG \\\n"
             "      --target-dev 3200 --output-mode mod --mod-root /path/to/mod\n\n"
-            "  # 改明和清，按 2.0 倍\n"
-            "  %(prog)s --source-root /path/to/eu4 --owner MNG,QNG --factor 2.0\n"
+            "  # 只改明，按 2.0 倍\n"
+            "  %(prog)s --source-root /path/to/eu4 --owner MNG --factor 2.0\n"
         ),
     )
 
@@ -398,15 +351,16 @@ def main() -> int:
             owner_tags=owner_tags,
         )
 
-    # ---------- 1. 读取全部省份 ----------
+    # ---------- 1. 读取全部省份（只看顶层） ----------
     all_provs: dict[int, ProvinceInfo] = {}
     for p in sorted(hist_dir.glob("*.txt")):
         m = re.match(r"(\d+)", p.name)
         if not m:
             continue
         pid = int(m.group(1))
-        top, dated = parse_history_file(p)
-        owner = get_owner_at(top, dated, START_DATE)
+        top = parse_top_level(p)
+        owner_val = top.get("owner")
+        owner: str | None = owner_val if isinstance(owner_val, str) else None
         all_provs[pid] = {
             "path": p,
             "top": top,
@@ -506,7 +460,7 @@ def main() -> int:
             )
         mod_hist = mod_root_resolved / args.history
         if not args.dry_run:
-            mod_hist.mkdir(parents=True, exist_ok=True)
+            mod_hist.mkdir(parents=True, exist_ok=True)  # pyright: ignore[reportOptionalMemberAccess]
 
     for pid in sorted(targets):
         info = targets[pid]
