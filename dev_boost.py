@@ -52,7 +52,7 @@ class DevTriple(NamedTuple):
 def to_int(v: object, default: int = 0) -> int:
     try:
         return int(str(v).strip())
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -227,9 +227,7 @@ def load_tag_list(text: str) -> set[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
-        description="按开局 owner 调节 EU4 省份基础发展度"
-    )
+    ap = argparse.ArgumentParser(description="按开局 owner 调节 EU4 省份基础发展度")
     ap.add_argument(
         "--source-root",
         required=True,
@@ -424,7 +422,7 @@ def main() -> int:
             raise SystemExit("output-mode=mod 需要同时指定 --mod-root")
         mod_hist = Path(args.mod_root) / args.history
         if not args.dry_run:
-            mod_hist.mkdir(parents=True, exist_ok=True) # pyright: ignore[reportOptionalMemberAccess]
+            mod_hist.mkdir(parents=True, exist_ok=True)  # pyright: ignore[reportOptionalMemberAccess]
 
     for pid in sorted(targets):
         info = targets[pid]
