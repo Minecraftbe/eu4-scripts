@@ -1,23 +1,49 @@
 #!/usr/bin/env python3
-"""
-EU4 省份基础发展度调节脚本（支持只输出到 mod）
+r"""按 1444 开局 owner 调节 EU4 省份基础发展度。
 
-功能：
-  - 扫描源目录 history/provinces
-  - 读取每个省份文件顶层的 owner（即 1444 开局 owner）
-  - 只改顶层 base_tax / base_production / base_manpower
-  - 输出模式：
-      list    : 只列出候选省份，不写文件
-      inplace : 直接改源目录里的省份文件
-      mod     : 只把要改的省份文件复制/写入 mod 目录，其余省份不复制
-  - 支持白名单/黑名单/文件清单
-  - 支持多个 owner tag（逗号分隔）
-  - dry-run 时打印解析后的绝对路径与关键参数
+筛选口径：
+  - 扫描 <source-root>/history/provinces
+  - 取每个省份文件顶层（第一个日期块之前）的 owner，即 1444 开局 owner
+  - 只改顶层的 base_tax / base_production / base_manpower
+
+发展度算法：
+  - 目标总 dev 由 --target-dev 给出；不填则用 --factor 乘当前总 dev（默认 2.5 倍）
+  - --factor 是相对当前值的，对同一目录重复 inplace 会叠加放大；要可重复请用 --target-dev
+  - 按原 tax/prod/man 比例分配，每项最低 1
+  - is_city / center_of_trade / fort_15th 会带来权重加成，目标省份之间按权重分配总 dev
+
+输出模式（--output-mode）：
+  list     只列出候选省份，不写任何文件（默认）
+  mod      只把要改的省份写到 <mod-root>/<history> 下，其余省份不复制
+  inplace  直接改源目录里的省份文件，可配 --backup 生成 .bak
+
+安全默认：
+  - 默认 list，只读；只有显式 --output-mode 才会写文件
+  - mod 模式要求同时给 --mod-root；目标等于或位于源目录内，或位于带
+    .dev-tools-repo 标记的工具集合内部，都会被拒绝执行
+  - mod 模式遇到已有同名文件默认跳过，要 --overwrite-mod 才覆盖
+  - inplace 的 .bak 备份只生成一次，已存在不覆盖
+  - --dry-run 会打印解析后的绝对路径与关键参数，且不写任何文件
+
+输出：
+  - 默认安静：参数回显、逐项进度、汇总只在 --verbose 时打印（--dry-run 隐含 --verbose）
+  - list 模式的清单走 stdout，可以直接重定向；过程说明与警告一律走 stderr
+
+示例：
+  # 只列清单，不写文件（默认模式）
+  %(prog)s --source-root D:\example\eu4 --owner MNG
+
+  # 把明（MNG）的总 dev 调到 3200，只输出到 mod 目录
+  %(prog)s --source-root D:\example\eu4 --owner MNG --target-dev 3200 --output-mode mod --mod-root D:\example\my-mod
+
+  # 把明按 2.0 倍放大，原地修改并备份
+  %(prog)s --source-root D:\example\eu4 --owner MNG --factor 2.0 --output-mode inplace --backup
 """
 
 import argparse
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import NamedTuple, TypedDict
 
@@ -32,6 +58,18 @@ DEFAULT_HISTORY = "history/provinces"
 DEFAULT_OUTPUT_MODE = "list"
 DEFAULT_OWNER = "MNG"
 DEFAULT_FACTOR = 2.5
+
+# 工具集合标记文件（工具仓库根目录）。数据脚本拒绝写进带该标记的目录树。
+REPO_MARKER = ".dev-tools-repo"
+
+# 过程说明默认安静，只有 --verbose（或 --dry-run）时才打印，且一律走 stderr。
+VERBOSE = False
+
+
+def log(*args: object) -> None:
+    """过程说明：默认静默，--verbose 时打到 stderr。"""
+    if VERBOSE:
+        print(*args, file=sys.stderr)
 
 
 class ProvinceInfo(TypedDict):
@@ -57,6 +95,17 @@ def to_int(v: object, default: int = 0) -> int:
         return int(str(v).strip())
     except TypeError, ValueError:
         return default
+
+
+def find_tool_collection(path: Path) -> Path | None:
+    """向上查找工具集合标记，命中则说明 path 在工具集合内部。
+
+    只看传入的路径，不看脚本自身位置，因此脚本脱离仓库后本检查自然失效。
+    """
+    for d in (path, *path.parents):
+        if (d / REPO_MARKER).is_file():
+            return d
+    return None
 
 
 def parse_kv_inner(text: str, target: KVMap) -> None:
@@ -195,50 +244,40 @@ def print_run_config(
     owner_tags: set[str],
 ) -> None:
     """打印解析后的运行配置（路径均已是绝对路径）。"""
-    print("=== 运行配置 ===")
-    print(f"  source-root    : {source_root}")
-    print(f"  history        : {hist_dir}")
-    print(f"  output-mode    : {args.output_mode}")
+    log("=== 运行配置 ===")
+    log(f"  source-root    : {source_root}")
+    log(f"  history        : {hist_dir}")
+    log(f"  output-mode    : {args.output_mode}")
     if args.output_mode == "mod":
         shown = mod_root if mod_root is not None else "(未指定)"
-        print(f"  mod-root       : {shown}")
-        print(
+        log(f"  mod-root       : {shown}")
+        log(
             f"  mod history    : "
             f"{mod_root / args.history if mod_root is not None else '(未指定)'}"
         )
-        print(f"  overwrite-mod  : {args.overwrite_mod}")
-    print(f"  owner          : {','.join(sorted(owner_tags))}")
+        log(f"  overwrite-mod  : {args.overwrite_mod}")
+    log(f"  owner          : {','.join(sorted(owner_tags))}")
     if args.target_dev is not None:
-        print(f"  target-dev     : {args.target_dev}")
+        log(f"  target-dev     : {args.target_dev}")
     else:
-        print(f"  factor         : {args.factor}")
+        log(f"  factor         : {args.factor}")
     if args.provinces:
-        print(f"  provinces      : {args.provinces}")
+        log(f"  provinces      : {args.provinces}")
     if args.provinces_file:
         pf = Path(args.provinces_file).expanduser().resolve()
-        print(f"  provinces-file : {pf}")
+        log(f"  provinces-file : {pf}")
     if args.exclude:
-        print(f"  exclude        : {args.exclude}")
-    print(f"  backup         : {args.backup}")
-    print(f"  dry-run        : {args.dry_run}")
-    print("================")
-    print()
+        log(f"  exclude        : {args.exclude}")
+    log(f"  backup         : {args.backup}")
+    log(f"  dry-run        : {args.dry_run}")
+    log("================")
+    log()
 
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
-        description="按开局 owner 调节 EU4 省份基础发展度",
+        description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "示例：\n"
-            "  # 只列清单，不写文件（默认模式）\n"
-            "  %(prog)s --source-root /path/to/eu4\n\n"
-            "  # 只改明，目标总 dev 3200，输出到 mod\n"
-            "  %(prog)s --source-root /path/to/eu4 --owner MNG \\\n"
-            "      --target-dev 3200 --output-mode mod --mod-root /path/to/mod\n\n"
-            "  # 只改明，按 2.0 倍\n"
-            "  %(prog)s --source-root /path/to/eu4 --owner MNG --factor 2.0\n"
-        ),
     )
 
     ap.add_argument(
@@ -321,12 +360,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="不写文件，只显示将要做什么（默认：否）",
     )
+    ap.add_argument(
+        "--verbose",
+        action="store_true",
+        help="打印参数回显、逐项进度与汇总（默认安静；--dry-run 隐含此项）",
+    )
 
     return ap.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    global VERBOSE
+    VERBOSE = args.verbose or args.dry_run
 
     source_root = Path(args.source_root).expanduser().resolve()
     hist_dir = (source_root / args.history).resolve()
@@ -342,7 +389,7 @@ def main() -> int:
     if args.mod_root:
         mod_root_resolved = Path(args.mod_root).expanduser().resolve()
 
-    if args.dry_run:
+    if VERBOSE:
         print_run_config(
             args,
             source_root=source_root,
@@ -378,7 +425,8 @@ def main() -> int:
     if args.provinces:
         whitelist = load_id_list(args.provinces)
     if args.provinces_file:
-        extra = load_id_list(Path(args.provinces_file).read_text(encoding="utf-8"))
+        pf = Path(args.provinces_file).expanduser().resolve()
+        extra = load_id_list(pf.read_text(encoding="utf-8-sig"))
         whitelist = extra if whitelist is None else (whitelist | extra)
 
     excluded: set[int] = load_id_list(args.exclude) if args.exclude else set()
@@ -432,7 +480,7 @@ def main() -> int:
 
     # ---------- 5. 执行 ----------
     tags_str = ",".join(sorted(owner_tags))
-    print(
+    log(
         f"模式={args.output_mode}，owner={tags_str}，"
         f"匹配省份数={len(targets)}，"
         f"原始总dev={orig_total}，目标总dev={final_total}，实际总dev={actual_total}"
@@ -446,26 +494,38 @@ def main() -> int:
                 f"{pid:4d} [{info['owner']}] {info['path'].name}: "
                 f"{info['tax']}/{info['prod']}/{info['man']} -> {t}/{p}/{m}"
             )
-        print("list 模式：未写入文件。")
+        log("list 模式：未写入文件。")
         return 0
 
     mod_hist: Path | None = None
     if args.output_mode == "mod":
         if mod_root_resolved is None:
             raise SystemExit("output-mode=mod 需要同时指定 --mod-root")
-        if mod_root_resolved == source_root:
+        if mod_root_resolved.is_relative_to(source_root):
             raise SystemExit(
-                "mod-root 与 source-root 相同，会写入源目录。"
-                "请指定独立的 mod 目录，或改用 --output-mode inplace。"
+                f"[error] mod-root 等于或位于源目录内，会写进游戏目录："
+                f"{mod_root_resolved}。请指定独立的 mod 目录，"
+                "或改用 --output-mode inplace。"
+            )
+        collection = find_tool_collection(mod_root_resolved)
+        if collection is not None:
+            raise SystemExit(
+                f"[error] mod-root 位于工具集合内部（{collection}），拒绝写入："
+                f"{mod_root_resolved}\n"
+                "检查是否把 dev-tools 链接或 . 当成了 mod 目录。"
             )
         mod_hist = mod_root_resolved / args.history
         if not args.dry_run:
             mod_hist.mkdir(parents=True, exist_ok=True)  # pyright: ignore[reportOptionalMemberAccess]
 
+    changed = 0
+    skipped = 0
+
     for pid in sorted(targets):
         info = targets[pid]
         src = info["path"]
         t, p, m = plan[pid]
+        change = f"{info['tax']}/{info['prod']}/{info['man']} -> {t}/{p}/{m}"
 
         new_text = rewrite_dev_text(
             src.read_text(encoding="utf-8-sig", errors="ignore"),
@@ -477,7 +537,8 @@ def main() -> int:
         if args.output_mode == "inplace":
             dst = src
             if args.dry_run:
-                print(f"[dry-run] 将写入 {dst}")
+                log(f"[dry-run] {pid:4d} {dst.name}: {change}（将写入 {dst}）")
+                changed += 1
                 continue
 
             if args.backup:
@@ -486,28 +547,34 @@ def main() -> int:
                     shutil.copy2(dst, bak)
 
             dst.write_text(new_text, encoding="utf-8")
-            print(f"{pid:4d} {dst.name}: 已写入")
+            log(f"[ok] {pid:4d} {dst.name}: {change}（已写入）")
+            changed += 1
 
         elif args.output_mode == "mod":
             assert mod_hist is not None
             dst = mod_hist / src.name
 
             if dst.exists() and not args.overwrite_mod:
-                print(
-                    f"{pid:4d} {dst.name}: mod 中已存在，跳过"
+                log(
+                    f"[skip] {pid:4d} {dst.name}: mod 中已存在"
                     f"（用 --overwrite-mod 覆盖）"
                 )
+                skipped += 1
                 continue
 
             if args.dry_run:
-                print(f"[dry-run] 将复制并写入 {dst}")
+                log(f"[dry-run] {pid:4d} {dst.name}: {change}（将写入 {dst}）")
+                changed += 1
                 continue
 
             dst.write_text(new_text, encoding="utf-8")
-            print(f"{pid:4d} {dst.name}: 已写入 mod")
+            log(f"[ok] {pid:4d} {dst.name}: {change}（已写入 mod）")
+            changed += 1
 
     if args.dry_run:
-        print("dry-run：未真正写入文件。")
+        log(f"[dry-run] 未写入任何文件（将写入 {changed}，跳过 {skipped}）。")
+    else:
+        log(f"完成：写入 {changed}，跳过 {skipped}。")
 
     return 0
 
