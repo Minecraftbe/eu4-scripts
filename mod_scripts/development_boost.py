@@ -7,27 +7,14 @@ r"""按 1444 开局 owner 调节 EU4 省份基础发展度。
   - 只改顶层的 base_tax / base_production / base_manpower
 
 发展度算法：
-  - 目标总 dev 由 --target-dev 给出；不填则用 --factor 乘当前总 dev（默认 2.5 倍）
-  - --factor 是相对当前值的，对同一目录重复 inplace 会叠加放大；要可重复请用 --target-dev
-  - 按原 tax/prod/man 比例分配，每项最低 1
+  - 总 dev 由 --target-dev 或 --factor 定下，再按原 tax/prod/man 比例分配，每项最低 1
+  - --factor 是相对当前值的乘数，对同一目录重复原地改写会叠加放大；要可重复请用 --target-dev
   - is_city / center_of_trade / fort_15th 会带来权重加成，目标省份之间按权重分配总 dev
 
-输出模式（--output-mode）：
-  list     只列出候选省份，不写任何文件（默认）
-  mod      只把要改的省份写到 <mod-root>/<history> 下，其余省份不复制
-  inplace  直接改源目录里的省份文件，可配 --backup 生成 .bak
+安全默认：默认 list 只读，不写任何文件；目标等于或位于源目录内，或落在带 .dev-tools-repo
+  标记的工具集合内部时拒绝执行。原地改写要回滚，还原同目录的 .bak 即可。
 
-安全默认：
-  - 默认 list，只读；只有显式 --output-mode 才会写文件
-  - mod 模式要求同时给 --mod-root；目标等于或位于源目录内，或位于带
-    .dev-tools-repo 标记的工具集合内部，都会被拒绝执行
-  - mod 模式遇到已有同名文件默认跳过，要 --overwrite-mod 才覆盖
-  - inplace 的 .bak 备份只生成一次，已存在不覆盖
-  - --dry-run 会打印解析后的绝对路径与关键参数，且不写任何文件
-
-输出：
-  - 默认安静：参数回显、逐项进度、汇总只在 --verbose 时打印（--dry-run 隐含 --verbose）
-  - list 模式的清单走 stdout，可以直接重定向；过程说明与警告一律走 stderr
+输出：list 模式的清单走 stdout，可直接重定向；过程说明与警告一律走 stderr。
 
 示例：
   # 只列清单，不写文件（默认模式）
@@ -274,9 +261,21 @@ def print_run_config(
     log()
 
 
+def _help_texts() -> tuple[str, str]:
+    """把模块 docstring 拆成 --help 的 description 与 epilog。
+
+    docstring 保持完整用户文档：首段作 description（摘要），其余作 epilog（详细说明），
+    因此 --help 先给摘要与选项，细节放在选项之后展开。
+    """
+    summary, _, detail = (__doc__ or "").strip().partition("\n\n")
+    return summary.strip(), detail.strip()
+
+
 def parse_args() -> argparse.Namespace:
+    summary, detail = _help_texts()
     ap = argparse.ArgumentParser(
-        description=__doc__,
+        description=summary,
+        epilog=detail,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -297,9 +296,9 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_OUTPUT_MODE,
         help=(
             "输出模式："
-            "list=只列清单；"
-            "inplace=直接改源目录；"
-            "mod=只输出到 mod 目录"
+            "list=只列清单，不写文件；"
+            "inplace=直接改源目录（配 --backup 生成 .bak）；"
+            "mod=只把要改的省份写到 --mod-root，其余省份不复制"
             f"（默认：{DEFAULT_OUTPUT_MODE}）"
         ),
     )
@@ -353,7 +352,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--backup",
         action="store_true",
-        help="output-mode=inplace 时，写入前生成 .bak 备份（默认：不备份）",
+        help="output-mode=inplace 时，写入前生成 .bak 备份，已存在则不覆盖（默认：不备份）",
     )
     ap.add_argument(
         "--dry-run",
@@ -363,7 +362,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--verbose",
         action="store_true",
-        help="打印参数回显、逐项进度与汇总（默认安静；--dry-run 隐含此项）",
+        help="打印参数回显（含解析后的绝对路径）、逐项进度与汇总（默认安静；--dry-run 隐含此项）",
     )
 
     return ap.parse_args()
@@ -373,7 +372,7 @@ def main() -> int:
     args = parse_args()
 
     global VERBOSE
-    VERBOSE = args.verbose or args.dry_run
+    VERBOSE = args.verbose or args.dry_run  # pyright: ignore[reportConstantRedefinition]
 
     source_root = Path(args.source_root).expanduser().resolve()
     hist_dir = (source_root / args.history).resolve()

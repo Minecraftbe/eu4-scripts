@@ -13,12 +13,15 @@
 
 ```
 dev-tool/
-├── init_mod_project.py       # 初始化 mod 项目：建立 dev-tools 链接、写 .gitignore、git init
-├── mod_scripts/              # 做 mod 用的游戏数据脚本
-├── AGENTS.md                 # 脚本编写规范
+├── init_mod_project.py          # 初始化 mod 项目：建立 dev-tools 链接、写 .gitignore、git init
+├── escape_eu4_special_chars.py  # 文本转义 + 本地化文件批量转码（C++ 版 EU4SpecialEscape 的 Python 复刻）
+├── mod_scripts/                 # 做 mod 用的游戏数据脚本
+├── AGENTS.md                    # 脚本编写规范
 ├── README.md
 └── ruff.toml
 ```
+
+> `escape_eu4_special_chars.py` 复刻自 [matanki-saito/EU4SpecialEscape](https://github.com/matanki-saito/EU4SpecialEscape)（MIT，Copyright (c) 2018 matanki-saito），原始版权与许可声明全文保留在该文件头部的注释里。
 
 ## 用法
 

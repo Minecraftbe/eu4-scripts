@@ -1,26 +1,14 @@
 #!/usr/bin/env python3
-"""初始化项目目录。
+"""初始化 mod 项目目录：建立 dev-tools 链接、写 .gitignore、git init。
 
-功能：
-  1. 在目标目录创建软链接 dev-tools -> 指定的工具目录
-  2. 将 dev-tools 写入目标目录的 .gitignore
-  3. 在目标目录执行 git init
-
-用法：
-  python init_mod_project.py --tools-dir /path/to/tools [目标目录] [--dry-run]
-
-安全默认：
-  默认不覆盖任何已有内容：软链接已存在且正确、.gitignore 已有条目、已是 git 仓库时
-  只打印 [skip]；目标已存在且状态冲突则报错退出。--dry-run 下不产生任何副作用。
+安全默认：不覆盖任何已有内容——软链接已存在且正确、.gitignore 已有条目、已是 git 仓库时
+  只打印 [skip]；目标已存在而状态冲突则报错退出，不覆盖、不猜测；--dry-run 不产生任何副作用。
   目标目录位于工具集合内部（带 .dev-tools-repo 标记）时拒绝执行。
 
-输出：
-  默认安静：每一步的结果与汇总只在 --verbose 时打印（--dry-run 隐含 --verbose）；
-  过程说明与警告走 stderr，stdout 不产生任何输出。
+输出：stdout 不产生任何输出；过程说明与警告一律走 stderr。
 
-注意：
-  工具目录必须通过 --tools-dir 显式指定，
-  不会自动使用脚本自身所在位置，避免误操作。
+示例：
+  python %(prog)s --tools-dir <工具目录> --dry-run <目标项目目录>
 """
 
 import argparse
@@ -153,15 +141,30 @@ def run_git_init(target_dir: Path, dry_run: bool) -> bool:
     return True
 
 
+def _help_texts() -> tuple[str, str]:
+    """把模块 docstring 拆成 --help 的 description 与 epilog。
+
+    docstring 保持完整用户文档：首段作 description（摘要），其余作 epilog（详细说明），
+    因此 --help 先给摘要与选项，细节放在选项之后展开。
+    """
+    summary, _, detail = (__doc__ or "").strip().partition("\n\n")
+    return summary.strip(), detail.strip()
+
+
 def parse_args() -> argparse.Namespace:
+    summary, detail = _help_texts()
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description=summary,
+        epilog=detail,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--tools-dir",
         required=True,
-        help="工具目录（软链接指向的目标），必须显式指定",
+        help=(
+            "工具目录（软链接指向的目标），必须显式指定；"
+            "不会用脚本自身所在位置推断，避免误操作"
+        ),
     )
     parser.add_argument(
         "target",
@@ -186,7 +189,7 @@ def main() -> int:
     args = parse_args()
 
     global VERBOSE
-    VERBOSE = args.verbose or args.dry_run
+    VERBOSE = args.verbose or args.dry_run  # pyright: ignore[reportConstantRedefinition]
 
     tools_dir = Path(args.tools_dir).expanduser().resolve()
     target_dir = Path(args.target).expanduser().resolve()
